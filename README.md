@@ -13,7 +13,7 @@ There are some integration tests included in this project. To run them you'll ne
 You can use a local instance using:
 
 ```
-docker pull artifacts.toradex.com/ota-docker-dev-frankfurt/wait-kafka:0.0.1
+docker run --rm --name httpbin --detach  --publish 9002:80 kennethreitz/httpbin
 ```
 
 Alternatively, you can edit `src/test/resources/application.conf` to use `http://httpbin.org:80` instead of `http://127.0.0.1:9002`.
