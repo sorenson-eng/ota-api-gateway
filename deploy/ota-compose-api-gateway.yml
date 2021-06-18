@@ -1,0 +1,239 @@
+version: "3.5"
+
+networks:
+  ota:
+    external: true
+
+services:
+  api-gateway:
+    image: sorenson/api-gateway:f0b6a3494c1af9643d061f508b882c5ecf1a5d0b
+    networks:
+      - ota
+    ports:
+      - 9001:9001
+    volumes:
+      - ./svrs.jks:/opt/api-gateway/svrs.jks:ro
+
+  ingress:
+    container_name: ${INGRESS_HOST}
+    image: nginx
+    command: nginx-debug -g 'daemon off;'
+    restart: always
+    volumes:
+      - ./nginx-docker.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx:/etc/nginx/conf.d:ro
+    hostname: ${INGRESS_HOST}
+    networks:
+      - ota
+    ports:
+      - ${INGRESS_PORT}:${INGRESS_PORT}
+      - 80:80
+    depends_on:
+      - api-gateway
+      - device-registry
+      - treehub
+      - tuf-reposerver
+
+  webapp:
+    container_name: ${APP_HOST}
+    image: 667328200800.dkr.ecr.us-east-2.amazonaws.com/ota/web:latest
+    command: node server/server.js
+    restart: always
+    networks:
+      - ota
+    ports:
+      - ${APP_PORT_PUB}:${APP_PORT}
+    environment:
+      - USER_PROFILE_HOST=${USER_PROFILE_HOST}
+      - USER_PROFILE_PORT=${USER_PROFILE_PORT}
+      - DEVICE_REGISTRY_HOST=${DEVICE_REGISTRY_HOST}
+      - DEVICE_REGISTRY_PORT=${DEVICE_REGISTRY_PORT}
+      - WS_HOST=${WS_HOST_PUB}
+      - WS_PORT=${WS_PORT_PUB}
+      - WS_SCHEME=${WS_SCHEME}
+      - ENV_PREFIX=${ENV_PREFIX}
+      - JAVA_OPTS=-Xmx300m
+      - MESSAGING_MODE=kafka
+      - PACKAGES_VERSION_FORMAT=.+
+      - REPORT_METRICS=false
+      - AUTH0_CLIENT_SECRET=${AUTH0_CLIENT_SECRET}
+      - OIDC_CLIENT_ID=${OIDC_CLIENT_ID}
+      - OIDC_ISSUER=${OIDC_ISSUER}
+      - OIDC_TOKEN_AUDIENCE=${OIDC_TOKEN_AUDIENCE}
+      - OIDC_CALLBACK_URL=${OIDC_CALLBACK_URL}
+      - JWT_SECRET=${JWT_SECRET}
+    healthcheck:
+      test: wget -qO - http://127.0.0.1:9008/health || exit 1
+
+  device-registry:
+    container_name: ${DEVICE_REGISTRY_HOST}
+    image: 667328200800.dkr.ecr.us-east-2.amazonaws.com/ota/device-registry-v2:latest
+    restart: always
+    hostname: ${DEVICE_REGISTRY_HOST}
+    volumes:
+      - ${GENERATED_CERTS}:/certificates
+    networks:
+      - ota
+    ports:
+      - ${DEVICE_REGISTRY_PORT_PUB}:${DEVICE_REGISTRY_PORT}
+    environment:
+      - KAFKA_TOPIC_SUFFIX=${KAFKA_TOPIC_SUFFIX}
+      - ENV_PREFIX=${ENV_PREFIX}
+      - KAFKA_HOST=${KAFKA_HOST}:${KAFKA_PORT}
+      - AUTH_PROTOCOL=none
+      - DB_MIGRATE=false
+      - DB_USER=${DEVICE_REGISTRY_USER}
+      - DB_PASSWORD=${DEVICE_REGISTRY_PASSWORD}
+      - DB_NAME=device_registry_v2
+      - JAVA_OPTS=-Xmx250m
+      - REPORT_METRICS=false
+      - BIND_HOST=0.0.0.0
+      - BIND_PORT=${DEVICE_REGISTRY_PORT}
+      - CERT_DIR=/certificates
+      - CERT_CONF_DIR=certsConf
+    healthcheck:
+      test: wget -qO - http://127.0.0.1:9001/health || exit 1
+
+  webevents:
+    container_name: ${WS_HOST}
+    image: 667328200800.dkr.ecr.us-east-2.amazonaws.com/ota/web-events:latest
+    restart: always
+    hostname: ${WS_HOST}
+    networks:
+      - ota
+    ports:
+      - ${WS_PORT_PUB}:${WS_PORT}
+    environment:
+      - KAFKA_TOPIC_SUFFIX=${KAFKA_TOPIC_SUFFIX}
+      - ENV_PREFIX=${ENV_PREFIX}
+      - KAFKA_HOST=${KAFKA_HOST}:${KAFKA_PORT}
+      - AUTH_PROTOCOL=jwt
+      - AUTH_VERIFICATION=local
+      - BIND_HOST=0.0.0.0
+      - BIND_PORT=${WS_PORT}
+      - PACKAGES_VERSION_FORMAT=".+"
+      - REPORT_METRICS=false
+      - JWT_SECRET=${JWT_SECRET}
+    healthcheck:
+      test: wget -qO - http://127.0.0.1:${WS_PORT}/health || exit 1
+
+  treehub:
+    container_name: ${TREE_HUB_HOST}
+    image: 667328200800.dkr.ecr.us-east-2.amazonaws.com/ota/treehub:latest
+    restart: always
+    hostname: ${TREE_HUB_HOST}
+    networks:
+      - ota
+    ports:
+      - 9012:${TREE_HUB_PORT}
+    volumes:
+      - ${TREE_HUB_VOLUME}:${TREE_HUB_LOCAL_STORAGE_ROOT}
+    environment:
+      - KAFKA_TOPIC_SUFFIX=${KAFKA_TOPIC_SUFFIX}
+      - ENV_PREFIX=${ENV_PREFIX}
+      - KAFKA_HOST=${KAFKA_HOST}:${KAFKA_PORT}
+      - AUTH_PROTOCOL=none
+      - BIND_HOST=0.0.0.0
+      - BIND_PORT=${TREE_HUB_PORT}
+      - DB_MIGRATE=true
+      - DB_URL=${DATABASE_ROOT_URL}/treehub
+      - DB_USER=${TREE_HUB_USER}
+      - DB_PASSWORD=${TREE_HUB_PASSWORD}
+      - DEVICE_REGISTRY_HOST=${DEVICE_REGISTRY_HOST}
+      - DEVICE_REGISTRY_PORT=${DEVICE_REGISTRY_PORT}
+      - JAVA_OPTS=-Xmx80m
+      - REPORT_METRICS=false
+      - TREEHUB_HOSTNAME=http://treehub.${OTA_SERVER_NAME}/api/v2/mydevice
+      - TREEHUB_LOCAL_STORE_PATH=${TREE_HUB_LOCAL_STORAGE_ROOT}
+      - TREEHUB_STORAGE=local
+    healthcheck:
+      test: wget -qO - http://127.0.0.1:9001/health || exit 1
+
+  tuf-reposerver:
+    container_name: ${TUF_REPO_HOST}
+    image: 667328200800.dkr.ecr.us-east-2.amazonaws.com/ota/tuf-reposerver:latest
+    restart: always
+    hostname: ${TUF_REPO_HOST}
+    networks:
+      - ota
+    ports:
+      - 9004:${TUF_REPO_PORT}
+    volumes:
+      - ${TUF_REPO_VOLUME}:${TUF_REPO_LOCAL_STORAGE_ROOT}
+    environment:
+      - KAFKA_TOPIC_SUFFIX=${KAFKA_TOPIC_SUFFIX}
+      - ENV_PREFIX=${ENV_PREFIX}
+      - KAFKA_HOST=${KAFKA_HOST}:${KAFKA_PORT}
+      - LOCAL_STORAGE_ROOT=${TUF_REPO_LOCAL_STORAGE_ROOT}
+      - AUTH_PROTOCOL=none
+      - AUTH_VERIFICATION=none
+      - BIND_PORT=${TUF_REPO_PORT}
+      - DB_MIGRATE=true
+      - DB_URL=${DATABASE_ROOT_URL}/tuf_reposerver
+      - DB_USER=${TUF_REPO_SERVER_USER}
+      - DB_PASSWORD=${TUF_REPO_SERVER_PASSWORD}
+      - DB_ENCRYPTION_SALT=${TUF_KEY_SERVER_ENCRYPTION_SALT}
+      - DB_ENCRYPTION_PASSWORD=${TUF_KEY_SERVER_ENCRYPTION_PASSWORD}
+      - JAVA_OPTS=-Xmx250m
+      - REPORT_METRICS=false
+      - STORAGE_TYPE=local
+      - TUF_KEYSERVER_HOST=${TUF_KEY_SERVER_HOST}
+      - TUF_KEYSERVER_PORT=${TUF_KEY_SERVER_PORT}
+      - TUF_REPOSERVER_SIZE_LIMIT=3221225472
+    healthcheck:
+      test: wget -qO - http://127.0.0.1:9001/health || exit 1
+
+  tuf-keyserver:
+    container_name: ${TUF_KEY_SERVER_HOST}
+    image: 667328200800.dkr.ecr.us-east-2.amazonaws.com/ota/tuf-keyserver:latest
+    command: -main com.advancedtelematic.tuf.keyserver.Boot
+    restart: always
+    hostname: ${TUF_KEY_SERVER_HOST}
+    networks:
+      - ota
+    ports:
+      - 9002:${TUF_KEY_SERVER_PORT}
+    environment:
+      - BIND_PORT=${TUF_KEY_SERVER_PORT}
+      - DB_MIGRATE=false
+      - DB_URL=${DATABASE_ROOT_URL}/tuf_keyserver
+      - DB_USER=${TUF_KEY_SERVER_USER}
+      - DB_PASSWORD=${TUF_KEY_SERVER_PASSWORD}
+      - DB_ENCRYPTION_SALT=${TUF_KEY_SERVER_ENCRYPTION_SALT}
+      - DB_ENCRYPTION_PASSWORD=${TUF_KEY_SERVER_ENCRYPTION_PASSWORD}
+      - JAVA_OPTS=-Xmx250m
+      - REPORT_METRICS=false
+      - TUF_VAULT_HOST=${TUF_VAULT_HOST}
+      - TUF_VAULT_PORT=${TUF_VAULT_PORT}
+      - TUF_VAULT_TOKEN=${TUF_VAULT_TOKEN}
+    healthcheck:
+      test: wget -qO - http://127.0.0.1:9001/health || exit 1
+    depends_on:
+      - tuf-keyserver-daemon
+
+  tuf-keyserver-daemon:
+    container_name: ${TUF_KEY_SERVER_DAEMON_HOST}
+    image: 667328200800.dkr.ecr.us-east-2.amazonaws.com/ota/tuf-keyserver:latest
+    command: -main com.advancedtelematic.tuf.keyserver.daemon.KeyGenerationDaemon
+    restart: always
+    hostname: ${TUF_KEY_SERVER_DAEMON_HOST}
+    networks: 
+      - ota
+    ports:
+      - 9003:${TUF_KEY_SERVER_DAEMON_PORT}
+    environment:
+      - BIND_PORT=${TUF_KEY_SERVER_DAEMON_PORT}
+      - DB_MIGRATE=true
+      - DB_URL=${DATABASE_ROOT_URL}/tuf_keyserver
+      - DB_USER=${TUF_KEY_SERVER_USER}
+      - DB_PASSWORD=${TUF_KEY_SERVER_PASSWORD}
+      - DB_ENCRYPTION_SALT=${TUF_KEY_SERVER_ENCRYPTION_SALT}
+      - DB_ENCRYPTION_PASSWORD=${TUF_KEY_SERVER_ENCRYPTION_PASSWORD}
+      - JAVA_OPTS=-Xmx250m
+      - REPORT_METRICS=false
+      - TUF_VAULT_HOST=${TUF_VAULT_HOST}
+      - TUF_VAULT_PORT=${TUF_VAULT_PORT}
+      - TUF_VAULT_TOKEN=${TUF_VAULT_TOKEN}
+    healthcheck:
+      test: wget -qO - http://127.0.0.1:9001/health || exit 1
+
